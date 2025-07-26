@@ -1,0 +1,24 @@
+# Example configuration file for multicluster-k9s
+# Place this file at ~/.config/multicluster-k9s/config.yaml
+# Or use it with the --config flag: ./multicluster-k9s --config config-example.yaml
+
+# Default namespace to use when viewing resources
+defaultNamespace: "default"
+
+# List of preferred contexts to automatically select on startup
+# These contexts will be selected when the application starts
+# If a context doesn't exist, it will be ignored
+preferredContexts:
+  - "kind-cluster-2"
+  - "kind-cluster-1"
+  - "kind-cluster-3"
+
+# Refresh interval in seconds for automatic resource updates
+# The UI will automatically refresh resource views at this interval
+# Set to 0 to disable automatic refresh
+refreshInterval: 5
+
+# Sort contexts alphabetically when displaying resources
+# If true, contexts will be sorted alphabetically regardless of preferred order
+# If false, contexts will maintain the order specified in preferredContexts
+sortContextsAlphabetically: true
