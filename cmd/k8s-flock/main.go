@@ -45,7 +45,7 @@ func (cli *CLI) Run() error {
 
 	// Run the program
 	if _, err := p.Run(); err != nil {
-		return fmt.Errorf("error running k8s-flock: %w", err)
+		return fmt.Errorf("error running flock: %w", err)
 	}
 
 	return nil
@@ -55,7 +55,7 @@ func main() {
 	cli := &CLI{}
 
 	kong.Parse(cli,
-		kong.Name("k8s-flock"),
+		kong.Name("flock"),
 		kong.Description("A TUI tool like k9s that operates across multiple Kubernetes clusters simultaneously."),
 		kong.UsageOnError(),
 		kong.ConfigureHelp(kong.HelpOptions{

@@ -26,20 +26,42 @@ git clone https://github.com/jonwinton/k8s-flock.git
 cd k8s-flock
 
 # Build the application
-go build -o k8s-flock ./cmd/k8s-flock
+go build -o flock ./cmd/k8s-flock
 ```
 
 ### Running
 
 ```bash
 # Run with default configuration
-./k8s-flock
+./flock
 
 # Run with custom config file
-./k8s-flock --config /path/to/config.yaml
+./flock --config /path/to/config.yaml
 
 # Show help
-./k8s-flock --help
+./flock --help
+```
+
+## Releases
+
+### Download Pre-built Binaries
+
+Pre-built binaries are available for multiple platforms on the [releases page](https://github.com/jonwinton/k8s-flock/releases).
+
+### Building Releases
+
+To build releases locally:
+
+```bash
+# Build binaries for all platforms
+./scripts/release.sh build
+
+# Create a snapshot release
+./scripts/release.sh snapshot
+
+# Create a full release (requires git tag)
+git tag v1.0.0
+./scripts/release.sh release
 ```
 
 ## Configuration
@@ -86,7 +108,7 @@ settings:
 Enter command mode by pressing `/` and type kubectl commands:
 
 ```
-k8s-flock - Command Mode
+flock - Command Mode
 ────────────────────────────────────────────────────────────────────────────────
 
 Enter kubectl command: get pods -n default
