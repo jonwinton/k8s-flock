@@ -47,9 +47,5 @@ jobs:
         with:
           cache: "true"
 
-      - name: golangci-lint
-        uses: golangci/golangci-lint-action@v4
-        with:
-          version: latest
-          args: --timeout=5m
-          working-directory: .
+      - name: Run golangci-lint
+        run: golangci-lint run --timeout=5m
