@@ -10,13 +10,29 @@ import (
 	"github.com/jonwinton/k8s-flock/internal/ui"
 )
 
+// Version information - these will be set by goreleaser during build
+var (
+	version = "dev"
+	commit  = "unknown"
+	date    = "unknown"
+)
+
 // CLI represents the command line interface structure
 type CLI struct {
-	Config string `short:"c" long:"config" help:"Path to configuration file"  type:"path" required:""`
+	Config  string `short:"c" long:"config" help:"Path to configuration file"  type:"path"`
+	Version bool   `short:"v" long:"version" help:"Print version information"`
 }
 
 // Run executes the main application
 func (cli *CLI) Run() error {
+	// Handle version flag
+	if cli.Version {
+		fmt.Printf("flock version %s\n", version)
+		fmt.Printf("commit: %s\n", commit)
+		fmt.Printf("date: %s\n", date)
+		return nil
+	}
+
 	// Load configuration
 	var cfg *config.Config
 	var err error
@@ -45,7 +61,7 @@ func (cli *CLI) Run() error {
 
 	// Run the program
 	if _, err := p.Run(); err != nil {
-		return fmt.Errorf("error running k8s-flock: %w", err)
+		return fmt.Errorf("error running flock: %w", err)
 	}
 
 	return nil
@@ -55,7 +71,7 @@ func main() {
 	cli := &CLI{}
 
 	kong.Parse(cli,
-		kong.Name("k8s-flock"),
+		kong.Name("flock"),
 		kong.Description("A TUI tool like k9s that operates across multiple Kubernetes clusters simultaneously."),
 		kong.UsageOnError(),
 		kong.ConfigureHelp(kong.HelpOptions{
