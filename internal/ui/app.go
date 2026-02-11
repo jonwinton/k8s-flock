@@ -30,6 +30,13 @@ func min(a, b int) int {
 	return b
 }
 
+var activeConfig *config.Config
+
+// SetActiveConfig sets the active configuration for color overrides
+func SetActiveConfig(cfg *config.Config) {
+	activeConfig = cfg
+}
+
 // Color constants for contexts - High contrast palette
 var contextColors = []lipgloss.Color{
 	lipgloss.Color("#FF0000"), // Bright Red
@@ -44,32 +51,32 @@ var contextColors = []lipgloss.Color{
 	lipgloss.Color("#0080FF"), // Sky Blue
 }
 
-// Column width percentages for responsive layout
-const (
-	colNamePercent     = 30 // Resource name - 30% of available width
-	colStatusPercent   = 10 // Status - 10% of available width
-	colAgePercent      = 5  // Age - 5% of available width
-	colReadyPercent    = 5  // Ready count - 5% of available width
-	colRestartsPercent = 5  // Restart count - 5% of available width
-	colTypePercent     = 20 // Service type - 20% of available width
-	colIPPercent       = 25 // Cluster IP - 25% of available width
-	colVersionPercent  = 20 // Version - 20% of available width
-	colPodIPPercent    = 15 // Pod IP - 15% of available width
-	colNodePercent     = 20 // Node name - 20% of available width
-)
-
 // Minimum column widths to ensure readability
 const (
-	minColName     = 10 // Minimum width for resource name
-	minColStatus   = 8  // Minimum width for status
-	minColAge      = 6  // Minimum width for age
-	minColReady    = 6  // Minimum width for ready count
-	minColRestarts = 8  // Minimum width for restart count
-	minColType     = 8  // Minimum width for service type
-	minColIP       = 10 // Minimum width for cluster IP
-	minColVersion  = 8  // Minimum width for version
-	minColPodIP    = 10 // Minimum width for pod IP
-	minColNode     = 12 // Minimum width for node name
+	minColName     = 10
+	minColStatus   = 8
+	minColAge      = 6
+	minColReady    = 6
+	minColRestarts = 8
+	minColType     = 8
+	minColIP       = 10
+	minColVersion  = 8
+	minColPodIP    = 10
+	minColNode     = 12
+)
+
+// Maximum column widths to prevent absurdly wide columns
+const (
+	maxColName     = 120
+	maxColStatus   = 20
+	maxColAge      = 12
+	maxColReady    = 10
+	maxColRestarts = 12
+	maxColType     = 30
+	maxColIP       = 40
+	maxColVersion  = 30
+	maxColPodIP    = 20
+	maxColNode     = 80
 )
 
 // refreshTickMsg represents a message for automatic refresh ticks
@@ -93,7 +100,11 @@ type AppModel struct {
 	resources map[string][]types.Resource // keyed by context
 
 	// UI State
-	statusMessage string
+	statusMessage  string
+	verticalOffset int // First visible resource row (0-indexed)
+	filterActive   bool
+	taggedKeys     map[string]bool // Set of tagged resource keys ("context/namespace/name")
+	filterText    string
 
 	// Context Selector
 	contextSelector *ContextSelectorModel
@@ -134,12 +145,12 @@ func NewAppModel() *AppModel {
 	contextMgr := context.NewManager()
 	resourceMgr := resource.NewManager()
 
-	// Load configuration
 	cfg, err := config.LoadConfig()
 	if err != nil {
-		// Use default config if loading fails
 		cfg = config.DefaultConfig()
 	}
+
+	SetActiveConfig(cfg)
 
 	return &AppModel{
 		config:             cfg,
@@ -157,6 +168,7 @@ func NewAppModel() *AppModel {
 		selectedIndex:      0,
 		flattenedResources: []types.Resource{},
 		yamlCache:          make(map[string]string),
+		taggedKeys:         make(map[string]bool),
 	}
 }
 
@@ -165,9 +177,16 @@ func NewAppModelWithConfig(cfg *config.Config) *AppModel {
 	contextMgr := context.NewManager()
 	resourceMgr := resource.NewManager()
 
-	// Initialize context manager with contexts and preferred contexts from config
+	SetActiveConfig(cfg)
+
 	if err := contextMgr.LoadContexts(); err == nil {
 		contextMgr.SetPreferredContexts(cfg.PreferredContexts)
+	}
+
+	for _, ctxCfg := range cfg.Contexts {
+		if ctxCfg.Kubeconfig != "" {
+			resourceMgr.GetExecutor().SetKubeconfigOverride(ctxCfg.Name, ctxCfg.Kubeconfig)
+		}
 	}
 
 	return &AppModel{
@@ -186,6 +205,7 @@ func NewAppModelWithConfig(cfg *config.Config) *AppModel {
 		selectedIndex:      0,
 		flattenedResources: []types.Resource{},
 		yamlCache:          make(map[string]string),
+		taggedKeys:         make(map[string]bool),
 	}
 }
 
@@ -263,14 +283,16 @@ type resourceLoadMsg struct {
 
 // GetContextColor returns a color for a given context name
 func GetContextColor(contextName string) lipgloss.Color {
-	// Simple hash-based color assignment
+	if activeConfig != nil {
+		if ctxCfg := activeConfig.GetContextConfig(contextName); ctxCfg != nil && ctxCfg.Color != "" {
+			return lipgloss.Color(ctxCfg.Color)
+		}
+	}
 	hash := 0
 	for _, char := range contextName {
 		hash = (hash*31 + int(char))
 	}
-	// Apply modulo after the full hash calculation
 	hash = hash % len(contextColors)
-	// Ensure positive index
 	if hash < 0 {
 		hash = -hash
 	}
@@ -284,66 +306,122 @@ func GetContextDot(contextName string) string {
 	return dotStyle.Render("●")
 }
 
-// calculateColumnWidths calculates the actual column widths based on percentages and available width
+// clamp returns v clamped to [lo, hi]
+func clamp(v, lo, hi int) int {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
+}
+
+// clipLine clips a plain string to a visible window [offset, offset+width)
+func clipLine(s string, offset, width int) string {
+	runes := []rune(s)
+	if offset >= len(runes) {
+		return strings.Repeat(" ", width)
+	}
+	end := offset + width
+	if end > len(runes) {
+		visible := string(runes[offset:])
+		return visible + strings.Repeat(" ", width-len([]rune(visible)))
+	}
+	return string(runes[offset:end])
+}
+
+// calculateColumnWidths calculates column widths based on actual data content
 func (m *AppModel) calculateColumnWidths(resourceType string) map[string]int {
-	// Account for padding and borders
-	availableWidth := m.width - 4 // Leave some padding
-
-	// Calculate total percentage for this resource type
-	var totalPercent int
-	switch strings.ToLower(resourceType) {
-	case "pods":
-		totalPercent = colNamePercent + colStatusPercent + colAgePercent + colReadyPercent + colRestartsPercent + colPodIPPercent + colNodePercent
-	case "deployments":
-		totalPercent = colNamePercent + colStatusPercent + colAgePercent + colReadyPercent
-	case "services":
-		totalPercent = colNamePercent + colStatusPercent + colAgePercent + colTypePercent + colIPPercent
-	case "nodes":
-		totalPercent = colNamePercent + colStatusPercent + colAgePercent + colVersionPercent
-	case "namespaces":
-		totalPercent = colNamePercent + colStatusPercent + colAgePercent
-	default:
-		totalPercent = colNamePercent + colStatusPercent + colAgePercent
+	type colSpec struct {
+		key      string
+		minW     int
+		maxW     int
+		headerW  int
+		dataMaxW int
 	}
 
-	// Calculate column widths based on percentages
+	var cols []colSpec
+
+	switch strings.ToLower(resourceType) {
+	case "pods":
+		cols = []colSpec{
+			{"name", minColName, maxColName, 4, 0},
+			{"status", minColStatus, maxColStatus, 6, 0},
+			{"age", minColAge, maxColAge, 3, 0},
+			{"ready", minColReady, maxColReady, 5, 0},
+			{"restarts", minColRestarts, maxColRestarts, 8, 0},
+			{"podip", minColPodIP, maxColPodIP, 6, 0},
+			{"node", minColNode, maxColNode, 4, 0},
+		}
+	case "deployments":
+		cols = []colSpec{
+			{"name", minColName, maxColName, 4, 0},
+			{"status", minColStatus, maxColStatus, 6, 0},
+			{"age", minColAge, maxColAge, 3, 0},
+			{"ready", minColReady, maxColReady, 5, 0},
+		}
+	case "services":
+		cols = []colSpec{
+			{"name", minColName, maxColName, 4, 0},
+			{"status", minColStatus, maxColStatus, 6, 0},
+			{"age", minColAge, maxColAge, 3, 0},
+			{"type", minColType, maxColType, 4, 0},
+			{"ip", minColIP, maxColIP, 10, 0},
+		}
+	case "nodes":
+		cols = []colSpec{
+			{"name", minColName, maxColName, 4, 0},
+			{"status", minColStatus, maxColStatus, 6, 0},
+			{"age", minColAge, maxColAge, 3, 0},
+			{"version", minColVersion, maxColVersion, 7, 0},
+		}
+	default:
+		cols = []colSpec{
+			{"name", minColName, maxColName, 4, 0},
+			{"status", minColStatus, maxColStatus, 6, 0},
+			{"age", minColAge, maxColAge, 3, 0},
+		}
+	}
+
+	for _, resources := range m.resources {
+		for _, r := range resources {
+			for i := range cols {
+				var val string
+				switch cols[i].key {
+				case "name":
+					val = r.Name
+				case "status":
+					val = r.Status
+				case "age":
+					val = r.Age
+				case "ready":
+					val = r.Ready
+				case "restarts":
+					val = r.Restarts
+				case "podip":
+					val = r.PodIP
+				case "node":
+					val = r.NodeName
+				case "type":
+					val = r.Type
+				case "ip":
+					val = r.ClusterIP
+				case "version":
+					val = r.Version
+				}
+				if len(val) > cols[i].dataMaxW {
+					cols[i].dataMaxW = len(val)
+				}
+			}
+		}
+	}
+
 	widths := make(map[string]int)
-
-	switch strings.ToLower(resourceType) {
-	case "pods":
-		widths["name"] = max(minColName, (colNamePercent*availableWidth)/totalPercent)
-		widths["status"] = max(minColStatus, (colStatusPercent*availableWidth)/totalPercent)
-		widths["age"] = max(minColAge, (colAgePercent*availableWidth)/totalPercent)
-		widths["ready"] = max(minColReady, (colReadyPercent*availableWidth)/totalPercent)
-		widths["restarts"] = max(minColRestarts, (colRestartsPercent*availableWidth)/totalPercent)
-		widths["podip"] = max(minColPodIP, (colPodIPPercent*availableWidth)/totalPercent)
-		widths["node"] = max(minColNode, (colNodePercent*availableWidth)/totalPercent)
-	case "deployments":
-		widths["name"] = max(minColName, (colNamePercent*availableWidth)/totalPercent)
-		widths["status"] = max(minColStatus, (colStatusPercent*availableWidth)/totalPercent)
-		widths["age"] = max(minColAge, (colAgePercent*availableWidth)/totalPercent)
-		widths["ready"] = max(minColReady, (colReadyPercent*availableWidth)/totalPercent)
-	case "services":
-		widths["name"] = max(minColName, (colNamePercent*availableWidth)/totalPercent)
-		widths["status"] = max(minColStatus, (colStatusPercent*availableWidth)/totalPercent)
-		widths["age"] = max(minColAge, (colAgePercent*availableWidth)/totalPercent)
-		widths["type"] = max(minColType, (colTypePercent*availableWidth)/totalPercent)
-		widths["ip"] = max(minColIP, (colIPPercent*availableWidth)/totalPercent)
-	case "nodes":
-		widths["name"] = max(minColName, (colNamePercent*availableWidth)/totalPercent)
-		widths["status"] = max(minColStatus, (colStatusPercent*availableWidth)/totalPercent)
-		widths["age"] = max(minColAge, (colAgePercent*availableWidth)/totalPercent)
-		widths["version"] = max(minColVersion, (colVersionPercent*availableWidth)/totalPercent)
-	case "namespaces":
-		widths["name"] = max(minColName, (colNamePercent*availableWidth)/totalPercent)
-		widths["status"] = max(minColStatus, (colStatusPercent*availableWidth)/totalPercent)
-		widths["age"] = max(minColAge, (colAgePercent*availableWidth)/totalPercent)
-	default:
-		widths["name"] = max(minColName, (colNamePercent*availableWidth)/totalPercent)
-		widths["status"] = max(minColStatus, (colStatusPercent*availableWidth)/totalPercent)
-		widths["age"] = max(minColAge, (colAgePercent*availableWidth)/totalPercent)
+	for _, c := range cols {
+		ideal := max(c.headerW, c.dataMaxW)
+		widths[c.key] = clamp(ideal, c.minW, c.maxW)
 	}
-
 	return widths
 }
 
@@ -367,14 +445,9 @@ func formatColumn(text string, width int) string {
 	return fmt.Sprintf("%-*s", width, truncated)
 }
 
-// formatColumnWithWidth formats a string to fit within the specified width, truncating with "..." if needed
+// formatColumnWithWidth pads text to the specified width (no truncation; scrolling reveals overflow)
 func (m *AppModel) formatColumnWithWidth(text string, width int) string {
-	if len(text) <= width {
-		return fmt.Sprintf("%-*s", width, text)
-	}
-	// Truncate and add "..."
-	truncated := text[:width-3] + "..."
-	return fmt.Sprintf("%-*s", width, truncated)
+	return fmt.Sprintf("%-*s", width, text)
 }
 
 // formatResourceLineWithWidths formats a resource line with percentage-based column widths
@@ -664,17 +737,19 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		updatedDeleteView, cmd := m.deleteView.Update(msg)
 		m.deleteView = updatedDeleteView.(*DeleteViewModel)
 
-		// Check if delete view sent a confirm message
 		if confirmMsg, ok := msg.(deleteViewConfirmMsg); ok {
 			m.currentView = types.ViewPods
-			// Execute the delete operation and start refresh timer
-			return m, tea.Batch(m.executeDelete(confirmMsg.resource, confirmMsg.forceDelete), m.startRefreshTimer())
+			var cmds []tea.Cmd
+			for _, res := range confirmMsg.resources {
+				cmds = append(cmds, m.executeDelete(res, confirmMsg.forceDelete))
+			}
+			m.taggedKeys = make(map[string]bool)
+			cmds = append(cmds, m.startRefreshTimer())
+			return m, tea.Batch(cmds...)
 		}
 
-		// Check if delete view sent a cancel message
 		if _, ok := msg.(deleteViewCancelMsg); ok {
 			m.currentView = types.ViewPods
-			// Start refresh timer when returning to main view
 			return m, m.startRefreshTimer()
 		}
 
@@ -691,10 +766,68 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // handleKeyPress processes keyboard input
 func (m *AppModel) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.filterActive {
+		switch msg.String() {
+		case "ctrl+c":
+			return m, tea.Quit
+		case "esc":
+			m.filterActive = false
+			m.filterText = ""
+			m.flattenResources()
+			m.selectedIndex = 0
+			return m, nil
+		case "enter":
+			m.filterActive = false
+			return m, nil
+		case "backspace":
+			if len(m.filterText) > 0 {
+				m.filterText = m.filterText[:len(m.filterText)-1]
+				m.flattenResources()
+				m.selectedIndex = 0
+			}
+			return m, nil
+		default:
+			if len(msg.String()) == 1 && msg.String() >= " " {
+				m.filterText += msg.String()
+				m.flattenResources()
+				m.selectedIndex = 0
+			}
+			return m, nil
+		}
+	}
+
 	switch msg.String() {
 	case "ctrl+c":
-		// Quit the application
 		return m, tea.Quit
+	case "tab":
+		if len(m.flattenedResources) > 0 {
+			currentContext := m.flattenedResources[m.selectedIndex].Context
+
+			var selectedContexts []string
+			if m.config.SortContextsAlphabetically {
+				selectedContexts = m.contextManager.GetSelectedContextsSorted()
+			} else {
+				selectedContexts = m.contextManager.GetSelectedContexts()
+			}
+
+			currentCtxIdx := -1
+			for i, ctx := range selectedContexts {
+				if ctx == currentContext {
+					currentCtxIdx = i
+					break
+				}
+			}
+
+			nextCtxIdx := (currentCtxIdx + 1) % len(selectedContexts)
+			nextContext := selectedContexts[nextCtxIdx]
+
+			for i, res := range m.flattenedResources {
+				if res.Context == nextContext {
+					m.selectedIndex = i
+					break
+				}
+			}
+		}
 	case "c":
 		// Open context selector
 		if m.currentView != types.ViewContextSelector {
@@ -727,11 +860,27 @@ func (m *AppModel) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Select previous resource
 		if len(m.flattenedResources) > 0 {
 			m.selectedIndex = max(0, m.selectedIndex-1)
+			m.ensureSelectedVisible()
 		}
 	case "down", "j":
 		// Select next resource
 		if len(m.flattenedResources) > 0 {
 			m.selectedIndex = min(len(m.flattenedResources)-1, m.selectedIndex+1)
+			m.ensureSelectedVisible()
+		}
+	case "pgup":
+		// Scroll up by a page
+		if len(m.flattenedResources) > 0 {
+			viewportHeight := m.resourceViewportHeight()
+			m.selectedIndex = max(0, m.selectedIndex-viewportHeight)
+			m.ensureSelectedVisible()
+		}
+	case "pgdown":
+		// Scroll down by a page
+		if len(m.flattenedResources) > 0 {
+			viewportHeight := m.resourceViewportHeight()
+			m.selectedIndex = min(len(m.flattenedResources)-1, m.selectedIndex+viewportHeight)
+			m.ensureSelectedVisible()
 		}
 	case "enter":
 		// View YAML for selected resource
@@ -768,27 +917,36 @@ func (m *AppModel) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, m.loadYAMLForEdit(selected)
 			}
 		}
+	case " ":
+		if len(m.flattenedResources) > 0 && m.selectedIndex < len(m.flattenedResources) {
+			m.toggleResourceTag(m.flattenedResources[m.selectedIndex])
+		}
 	case "ctrl+d":
-		// Delete selected resource
+		tagged := m.getTaggedResources()
+		if len(tagged) > 0 {
+			m.deleteView.SetResources(tagged)
+			m.currentView = types.ViewDelete
+			if m.width > 0 && m.height > 0 {
+				updatedDeleteView, _ := m.deleteView.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
+				m.deleteView = updatedDeleteView.(*DeleteViewModel)
+			}
+			return m, m.deleteView.Init()
+		}
 		if len(m.flattenedResources) > 0 && m.selectedIndex < len(m.flattenedResources) {
 			selected := m.getSelectedResource()
 			if selected != nil {
-				// Set up delete view with selected resource
-				m.deleteView.SetResource(types.SelectedResource{
+				m.deleteView.SetResources([]types.SelectedResource{{
 					Context:      selected.Context,
 					ResourceType: m.currentResource,
 					Namespace:    selected.Namespace,
 					Name:         selected.Name,
 					Index:        m.selectedIndex,
-				})
+				}})
 				m.currentView = types.ViewDelete
-
-				// Pass current window size to delete view
 				if m.width > 0 && m.height > 0 {
 					updatedDeleteView, _ := m.deleteView.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
 					m.deleteView = updatedDeleteView.(*DeleteViewModel)
 				}
-
 				return m, m.deleteView.Init()
 			}
 		}
@@ -799,7 +957,8 @@ func (m *AppModel) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "right", "l":
 		// Scroll right
-		maxScroll := max(0, m.totalWidth-m.width+4) // +4 for padding
+		viewportWidth := m.width - 2
+		maxScroll := max(0, m.totalWidth-viewportWidth)
 		if m.scrollOffset < maxScroll {
 			m.scrollOffset = min(maxScroll, m.scrollOffset+10)
 		}
@@ -808,7 +967,13 @@ func (m *AppModel) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.scrollOffset = 0
 	case "end":
 		// Scroll to end
-		m.scrollOffset = max(0, m.totalWidth-m.width+4)
+		viewportWidth := m.width - 2
+		m.scrollOffset = max(0, m.totalWidth-viewportWidth)
+	case "/":
+		m.filterActive = true
+		m.filterText = ""
+		m.flattenResources()
+		m.selectedIndex = 0
 	case "d":
 		// Debug: show selection order
 		m.statusMessage = "Debug: Press 'r' to refresh and clear debug info"
@@ -876,6 +1041,13 @@ func (m *AppModel) renderMainView() string {
 
 	headerBuilder.WriteString("k8s-flock - Contexts: " + contextLabel + "\n")
 	headerBuilder.WriteString("Resource: " + resourceDisplayName + " | Namespace: " + m.currentNamespace + "\n")
+
+	if m.filterActive {
+		headerBuilder.WriteString("Filter: " + m.filterText + "█\n")
+	} else if m.filterText != "" {
+		headerBuilder.WriteString("Filter: " + m.filterText + " (/ to edit, Esc to clear)\n")
+	}
+
 	headerBuilder.WriteString(strings.Repeat("─", m.width) + "\n")
 
 	// Status message
@@ -891,11 +1063,25 @@ func (m *AppModel) renderMainView() string {
 	if len(m.resources) > 0 {
 		// Calculate total width and update scroll state
 		m.totalWidth = m.calculateTotalWidth(resourceType)
+		viewportWidth := m.width - 2 // reserve 2 chars for selection prefix
 
-		// Use percentage-based header formatting
+		// Clamp scroll offset after recalculation
+		maxScroll := max(0, m.totalWidth-viewportWidth)
+		if m.scrollOffset > maxScroll {
+			m.scrollOffset = maxScroll
+		}
+
+		// Header: apply horizontal scroll (fixed, not vertically scrolled)
 		header := m.formatHeaderWithWidths(resourceType)
-		contentBuilder.WriteString(header + "\n")
+		contentBuilder.WriteString(clipLine(header, m.scrollOffset, m.width) + "\n")
 		contentBuilder.WriteString(strings.Repeat("─", m.width) + "\n")
+
+		// Build all resource lines first, then slice for vertical scroll
+		type resourceLine struct {
+			text       string
+			isResource bool
+		}
+		var allLines []resourceLine
 
 		// Group resources by context in the order of selected contexts
 		var selectedContexts []string
@@ -910,30 +1096,67 @@ func (m *AppModel) renderMainView() string {
 				continue
 			}
 
+			var filtered []types.Resource
+			for _, r := range resources {
+				if m.resourceMatchesFilter(contextName, r) {
+					filtered = append(filtered, r)
+				}
+			}
+
+			if len(filtered) == 0 {
+				continue
+			}
+
 			// Context header with colored dot
 			contextDot := GetContextDot(contextName)
 			contextStyle := lipgloss.NewStyle().Foreground(GetContextColor(contextName)).Bold(true)
-			contextHeader := contextStyle.Render(fmt.Sprintf("%s %s (%d resources)", contextDot, contextName, len(resources)))
-			contentBuilder.WriteString(contextHeader + "\n")
+			var contextHeader string
+			if m.filterText != "" {
+				contextHeader = contextStyle.Render(fmt.Sprintf("%s %s (%d/%d resources)", contextDot, contextName, len(filtered), len(resources)))
+			} else {
+				contextHeader = contextStyle.Render(fmt.Sprintf("%s %s (%d resources)", contextDot, contextName, len(resources)))
+			}
+			allLines = append(allLines, resourceLine{text: contextHeader, isResource: false})
 
-			// Resources for this context using percentage-based formatting
-			for _, resource := range resources {
-				line := m.formatResourceLineWithWidths(resourceType, resource)
+			// Resources for this context
+			for _, res := range filtered {
+				line := m.formatResourceLineWithWidths(resourceType, res)
+				clipped := clipLine(line, m.scrollOffset, viewportWidth)
 
-				// Check if this resource is selected
-				if m.isResourceSelected(resource) {
-					// Highlight selected resource
-					selectedStyle := lipgloss.NewStyle().Background(lipgloss.Color("#4444FF")).Foreground(lipgloss.Color("#FFFFFF"))
-					line = selectedStyle.Render("▶ " + line)
+				tagged := m.isResourceTagged(res)
+				selected := m.isResourceSelected(res)
+
+				if selected && tagged {
+					style := lipgloss.NewStyle().Background(lipgloss.Color("#4444FF")).Foreground(lipgloss.Color("#FFFFFF"))
+					allLines = append(allLines, resourceLine{text: style.Render("▶●" + clipped), isResource: true})
+				} else if selected {
+					style := lipgloss.NewStyle().Background(lipgloss.Color("#4444FF")).Foreground(lipgloss.Color("#FFFFFF"))
+					allLines = append(allLines, resourceLine{text: style.Render("▶ " + clipped), isResource: true})
+				} else if tagged {
+					tagStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#FF8000"))
+					allLines = append(allLines, resourceLine{text: tagStyle.Render("● ") + clipped, isResource: true})
 				} else {
-					line = "  " + line
+					allLines = append(allLines, resourceLine{text: "  " + clipped, isResource: true})
 				}
-
-				contentBuilder.WriteString(line + "\n")
 			}
 
-			// Add spacing between context groups
-			contentBuilder.WriteString("\n")
+			// Spacing between context groups
+			allLines = append(allLines, resourceLine{text: "", isResource: false})
+		}
+
+		// Clamp verticalOffset
+		if m.verticalOffset > len(allLines) {
+			m.verticalOffset = max(0, len(allLines)-1)
+		}
+
+		// Calculate how many lines we can show in the resource viewport
+		viewportHeight := m.resourceViewportHeight()
+
+		// Slice the visible portion
+		startLine := m.verticalOffset
+		endLine := min(len(allLines), startLine+viewportHeight)
+		for i := startLine; i < endLine; i++ {
+			contentBuilder.WriteString(allLines[i].text + "\n")
 		}
 	} else {
 		contentBuilder.WriteString("No " + strings.ToLower(resourceDisplayName) + " found. Press 'r' to refresh.\n")
@@ -949,9 +1172,19 @@ func (m *AppModel) renderMainView() string {
 		scrollCommands = " [←→]scroll [home/end]"
 	}
 
-	// Add refresh interval info
+	// Add vertical scroll indicator if resources exceed viewport
+	vertScrollCommands := ""
+	if len(m.flattenedResources) > m.resourceViewportHeight() {
+		vertScrollCommands = " [pgup/pgdn]page"
+	}
+
+	tagInfo := ""
+	if len(m.taggedKeys) > 0 {
+		tagInfo = fmt.Sprintf(" | %d tagged", len(m.taggedKeys))
+	}
+
 	refreshInfo := fmt.Sprintf(" (auto-refresh: %ds)", m.config.RefreshInterval)
-	footerBuilder.WriteString("Commands: [↑↓]select [enter]yaml [e]dit [ctrl+d]delete [:]resource [c]ontexts [r]efresh [d]ebug [q]uit" + scrollCommands + refreshInfo + "\n")
+	footerBuilder.WriteString("Commands: [↑↓]select [space]tag [enter]yaml [e]dit [ctrl+d]delete [:]resource [/]filter [c]ontexts [r]efresh [q]uit" + scrollCommands + vertScrollCommands + tagInfo + refreshInfo + "\n")
 
 	// Combine header and content
 	headerContent := headerBuilder.String() + contentBuilder.String()
@@ -978,6 +1211,96 @@ func (m *AppModel) GetContextManager() *context.Manager {
 	return m.contextManager
 }
 
+// resourceMatchesFilter checks if a resource matches the current filter text.
+// Space-separated terms are ANDed — each term must appear in at least one field.
+func (m *AppModel) resourceMatchesFilter(contextName string, r types.Resource) bool {
+	if m.filterText == "" {
+		return true
+	}
+	terms := strings.Fields(strings.ToLower(m.filterText))
+	if len(terms) == 0 {
+		return true
+	}
+	searchable := strings.ToLower(r.Name + " " + contextName + " " + r.Namespace + " " + r.Status)
+	for _, term := range terms {
+		if !strings.Contains(searchable, term) {
+			return false
+		}
+	}
+	return true
+}
+
+// resourceViewportHeight returns the number of lines available for resource rows.
+// It subtracts the header lines (context info, resource/namespace, separator,
+// optional status, table header, table separator) and the footer (3 lines) from
+// the terminal height.
+func (m *AppModel) resourceViewportHeight() int {
+	headerLines := 3 // context line + resource/namespace line + separator
+	if m.statusMessage != "" {
+		headerLines += 2 // status line + separator
+	}
+	headerLines += 2 // table column header + separator
+	footerLines := 3
+	return max(1, m.height-headerLines-footerLines)
+}
+
+// ensureSelectedVisible adjusts verticalOffset so the selected resource row
+// is within the visible viewport. This maps selectedIndex to a line position
+// in the rendered resource list (which includes context headers and spacing)
+// and scrolls accordingly.
+func (m *AppModel) ensureSelectedVisible() {
+	if len(m.flattenedResources) == 0 {
+		m.verticalOffset = 0
+		return
+	}
+
+	// Map selectedIndex to its line position in the rendered resource list.
+	// The rendered list has: for each context group, a context header line,
+	// then one line per resource, then one blank spacing line.
+	lineIndex := 0
+	resourceIdx := 0
+	var selectedContexts []string
+	if m.config.SortContextsAlphabetically {
+		selectedContexts = m.contextManager.GetSelectedContextsSorted()
+	} else {
+		selectedContexts = m.contextManager.GetSelectedContexts()
+	}
+
+	found := false
+	for _, contextName := range selectedContexts {
+		resources, exists := m.resources[contextName]
+		if !exists || len(resources) == 0 {
+			continue
+		}
+		lineIndex++ // context header line
+		for range resources {
+			if resourceIdx == m.selectedIndex {
+				found = true
+				break
+			}
+			lineIndex++
+			resourceIdx++
+		}
+		if found {
+			break
+		}
+		lineIndex++ // spacing line between context groups
+	}
+
+	viewportHeight := m.resourceViewportHeight()
+
+	// Scroll up if selected is above viewport
+	if lineIndex < m.verticalOffset {
+		m.verticalOffset = lineIndex
+	}
+	// Scroll down if selected is below viewport
+	if lineIndex >= m.verticalOffset+viewportHeight {
+		m.verticalOffset = lineIndex - viewportHeight + 1
+	}
+
+	m.verticalOffset = max(0, m.verticalOffset)
+}
+
 // flattenResources creates a flattened list of all resources for selection
 func (m *AppModel) flattenResources() {
 	m.flattenedResources = []types.Resource{}
@@ -999,13 +1322,28 @@ func (m *AppModel) flattenResources() {
 
 		for _, resource := range resources {
 			resource.Context = contextName // Ensure context is set
-			m.flattenedResources = append(m.flattenedResources, resource)
+			if m.resourceMatchesFilter(contextName, resource) {
+				m.flattenedResources = append(m.flattenedResources, resource)
+			}
 		}
 	}
 
 	// Reset selection if out of bounds
 	if m.selectedIndex >= len(m.flattenedResources) {
 		m.selectedIndex = 0
+	}
+
+	// Clamp verticalOffset if out of bounds after data reload
+	totalLines := 0
+	for _, contextName := range selectedContexts {
+		resources, exists := m.resources[contextName]
+		if !exists || len(resources) == 0 {
+			continue
+		}
+		totalLines += 1 + len(resources) + 1 // context header + resources + spacing
+	}
+	if m.verticalOffset >= totalLines {
+		m.verticalOffset = max(0, totalLines-1)
 	}
 }
 
@@ -1095,6 +1433,42 @@ type editLoadMsg struct {
 	yaml     string
 	resource types.Resource
 	error    string
+}
+
+// resourceTagKey returns a unique key for a resource used in the tagged set
+func resourceTagKey(r types.Resource) string {
+	return r.Context + "/" + r.Namespace + "/" + r.Name
+}
+
+// isResourceTagged checks if a resource is tagged for bulk operations
+func (m *AppModel) isResourceTagged(r types.Resource) bool {
+	return m.taggedKeys[resourceTagKey(r)]
+}
+
+// toggleResourceTag toggles the tagged state of a resource
+func (m *AppModel) toggleResourceTag(r types.Resource) {
+	key := resourceTagKey(r)
+	if m.taggedKeys[key] {
+		delete(m.taggedKeys, key)
+	} else {
+		m.taggedKeys[key] = true
+	}
+}
+
+// getTaggedResources returns all tagged resources as SelectedResource slice
+func (m *AppModel) getTaggedResources() []types.SelectedResource {
+	var result []types.SelectedResource
+	for _, r := range m.flattenedResources {
+		if m.isResourceTagged(r) {
+			result = append(result, types.SelectedResource{
+				Context:      r.Context,
+				ResourceType: m.currentResource,
+				Namespace:    r.Namespace,
+				Name:         r.Name,
+			})
+		}
+	}
+	return result
 }
 
 // isResourceSelected checks if a resource is currently selected

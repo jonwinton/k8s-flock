@@ -8,11 +8,20 @@ import (
 )
 
 // Executor handles kubectl command execution
-type Executor struct{}
+type Executor struct {
+	KubeconfigOverrides map[string]string
+}
 
 // NewExecutor creates a new kubectl executor
 func NewExecutor() *Executor {
-	return &Executor{}
+	return &Executor{
+		KubeconfigOverrides: make(map[string]string),
+	}
+}
+
+// SetKubeconfigOverride sets a kubeconfig path override for a specific context
+func (e *Executor) SetKubeconfigOverride(contextName, kubeconfigPath string) {
+	e.KubeconfigOverrides[contextName] = kubeconfigPath
 }
 
 // GetContexts returns all available kubectl contexts
@@ -48,9 +57,12 @@ func (e *Executor) GetCurrentContext() (string, error) {
 
 // ExecuteCommand executes a kubectl command in a specific context
 func (e *Executor) ExecuteCommand(contextName string, args ...string) ([]byte, error) {
-	fullArgs := append([]string{"--context", contextName}, args...)
+	fullArgs := []string{"--context", contextName}
+	if kubeconfigPath, ok := e.KubeconfigOverrides[contextName]; ok && kubeconfigPath != "" {
+		fullArgs = append(fullArgs, "--kubeconfig", kubeconfigPath)
+	}
+	fullArgs = append(fullArgs, args...)
 
-	// Create context with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -137,9 +149,12 @@ func (e *Executor) DeleteResource(context, resourceType, namespace, resourceName
 
 // ExecuteCommandWithStdin executes a kubectl command with stdin input
 func (e *Executor) ExecuteCommandWithStdin(contextName string, args []string, stdinData []byte) ([]byte, error) {
-	fullArgs := append([]string{"--context", contextName}, args...)
+	fullArgs := []string{"--context", contextName}
+	if kubeconfigPath, ok := e.KubeconfigOverrides[contextName]; ok && kubeconfigPath != "" {
+		fullArgs = append(fullArgs, "--kubeconfig", kubeconfigPath)
+	}
+	fullArgs = append(fullArgs, args...)
 
-	// Create context with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
