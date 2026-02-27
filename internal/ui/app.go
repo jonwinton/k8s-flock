@@ -104,7 +104,7 @@ type AppModel struct {
 	verticalOffset int // First visible resource row (0-indexed)
 	filterActive   bool
 	taggedKeys     map[string]bool // Set of tagged resource keys ("context/namespace/name")
-	filterText    string
+	filterText     string
 
 	// Context Selector
 	contextSelector *ContextSelectorModel
