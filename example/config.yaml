@@ -1,6 +1,6 @@
-# Example configuration file for multicluster-k9s
-# Place this file at ~/.config/multicluster-k9s/config.yaml
-# Or use it with the --config flag: ./multicluster-k9s --config config-example.yaml
+# Example configuration file for k8s-flock
+# Place this file at ~/.config/k8s-flock/config.yaml
+# Or use it with the --config flag: ./k8s-flock --config config-example.yaml
 
 # Default namespace to use when viewing resources
 defaultNamespace: "default"
@@ -22,3 +22,14 @@ refreshInterval: 5
 # If true, contexts will be sorted alphabetically regardless of preferred order
 # If false, contexts will maintain the order specified in preferredContexts
 sortContextsAlphabetically: true
+
+# Per-context configuration overrides
+# Use this to set custom kubeconfig paths or colors for specific contexts
+contexts:
+  - name: "kind-cluster-1"
+    color: "#00FF00"
+  - name: "kind-cluster-2"
+    kubeconfig: "/path/to/custom/kubeconfig"
+    color: "#FF8000"
+  - name: "kind-cluster-3"
+    kubeconfig: "/path/to/another/kubeconfig"
