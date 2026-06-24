@@ -4,7 +4,7 @@ go 1.24
 
 require (
 	github.com/alecthomas/kong v1.12.1
-	github.com/charmbracelet/bubbletea v1.3.6
+	github.com/charmbracelet/bubbletea/v2 v2.0.7
 	github.com/charmbracelet/lipgloss v1.1.0
 	gopkg.in/yaml.v3 v3.0.1
 )
