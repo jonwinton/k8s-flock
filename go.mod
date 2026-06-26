@@ -3,7 +3,7 @@ module github.com/jonwinton/k8s-flock
 go 1.24
 
 require (
-	github.com/alecthomas/kong v1.12.1
+	github.com/alecthomas/kong v1.15.0
 	github.com/charmbracelet/bubbletea v1.3.6
 	github.com/charmbracelet/lipgloss v1.1.0
 	gopkg.in/yaml.v3 v3.0.1
