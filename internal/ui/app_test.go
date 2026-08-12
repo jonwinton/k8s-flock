@@ -151,17 +151,17 @@ func TestFormatResourceLine(t *testing.T) {
 		Kind:      "Pod",
 	}
 
-	// Test pods formatting with percentage-based widths
+	// Test pods formatting with content-driven widths
 	line := model.formatResourceLineWithWidths("pods", resource)
 
-	// Test that long name is truncated
-	if !strings.Contains(line, "...") {
-		t.Errorf("Long name should be truncated with '...'")
+	// Full name should be preserved (no truncation; horizontal scroll reveals it)
+	if !strings.Contains(line, resource.Name) {
+		t.Errorf("Full resource name should be present in line, got: %s", line)
 	}
 
-	// Test that status is not truncated (it's short)
+	// Test that status is present
 	if !strings.Contains(line, "Running") {
-		t.Errorf("Status should not be truncated")
+		t.Errorf("Status should be present")
 	}
 }
 

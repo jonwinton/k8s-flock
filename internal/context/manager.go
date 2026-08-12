@@ -86,6 +86,11 @@ func (m *Manager) SetSelectedContexts(contexts []string) {
 	m.selectedContexts = contexts
 }
 
+// SetAvailableContexts sets the available contexts (useful for testing)
+func (m *Manager) SetAvailableContexts(contexts []types.KubeContext) {
+	m.availableContexts = contexts
+}
+
 // ToggleContext toggles a context in the selection
 func (m *Manager) ToggleContext(contextName string) {
 	for i, ctx := range m.selectedContexts {

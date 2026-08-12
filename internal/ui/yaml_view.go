@@ -335,11 +335,11 @@ func (m *YAMLViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.scrollOffset < maxScroll {
 				m.scrollOffset = min(maxScroll, m.scrollOffset+1)
 			}
-		case "pageup":
+		case "pgup":
 			// Page up
 			contentHeight := m.height - 4
 			m.scrollOffset = max(0, m.scrollOffset-contentHeight)
-		case "pagedown":
+		case "pgdown":
 			// Page down
 			contentHeight := m.height - 4
 			maxScroll := max(0, len(m.contentLines)-contentHeight)
@@ -421,7 +421,7 @@ func (m *YAMLViewModel) View() string {
 		neatViewStatus = " | Neat: OFF"
 	}
 
-	footer := footerStyle.Render(fmt.Sprintf("Commands: [↑↓]scroll [pgup/pgdn]page [home/end]top/bottom [m]toggle managed fields [n]toggle neat view [q/esc]back | %s%s%s", managedFieldsStatus, neatViewStatus, scrollInfo))
+	footer := footerStyle.Render(fmt.Sprintf("Commands: [↑↓]scroll [PgUp/PgDn]page [Home/End]top/bottom [m]toggle managed fields [n]toggle neat view [q/esc]back | %s%s%s", managedFieldsStatus, neatViewStatus, scrollInfo))
 	builder.WriteString(footer)
 
 	return builder.String()

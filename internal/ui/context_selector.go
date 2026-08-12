@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/jonwinton/k8s-flock/internal/context"
+	"github.com/jonwinton/k8s-flock/pkg/types"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -31,6 +32,8 @@ type ContextSelectorModel struct {
 	height         int
 	loading        bool
 	loadError      error
+	filterActive   bool
+	filterText     string
 }
 
 // NewContextSelectorModel creates a new context selector model
@@ -81,9 +84,65 @@ func (m *ContextSelectorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// filteredContexts returns available contexts matching the current filter.
+// Space-separated terms are ANDed — each term must appear in the context name.
+func (m *ContextSelectorModel) filteredContexts() []types.KubeContext {
+	contexts := m.contextManager.GetAvailableContexts()
+	if m.filterText == "" {
+		return contexts
+	}
+	terms := strings.Fields(strings.ToLower(m.filterText))
+	if len(terms) == 0 {
+		return contexts
+	}
+	var filtered []types.KubeContext
+	for _, ctx := range contexts {
+		name := strings.ToLower(ctx.Name)
+		match := true
+		for _, term := range terms {
+			if !strings.Contains(name, term) {
+				match = false
+				break
+			}
+		}
+		if match {
+			filtered = append(filtered, ctx)
+		}
+	}
+	return filtered
+}
+
 // handleKeyPress processes keyboard input for context selector
 func (m *ContextSelectorModel) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	contexts := m.contextManager.GetAvailableContexts()
+	if m.filterActive {
+		switch msg.String() {
+		case "ctrl+c":
+			return m, tea.Quit
+		case "esc":
+			m.filterActive = false
+			m.filterText = ""
+			m.cursor = 0
+			return m, nil
+		case "enter":
+			m.filterActive = false
+			return m, nil
+		case "backspace":
+			if len(m.filterText) > 0 {
+				m.filterText = m.filterText[:len(m.filterText)-1]
+				m.cursor = 0
+			}
+			return m, nil
+		default:
+			s := msg.String()
+			if len(s) == 1 && s[0] >= 32 && s[0] <= 126 {
+				m.filterText += s
+				m.cursor = 0
+			}
+			return m, nil
+		}
+	}
+
+	filtered := m.filteredContexts()
 
 	switch msg.String() {
 	case "up", "k":
@@ -91,34 +150,74 @@ func (m *ContextSelectorModel) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cm
 			m.cursor--
 		}
 	case "down", "j":
-		if m.cursor < len(contexts)-1 {
+		if m.cursor < len(filtered)-1 {
 			m.cursor++
 		}
 	case " ":
-		// Toggle context selection
-		if m.cursor < len(contexts) {
-			m.contextManager.ToggleContext(contexts[m.cursor].Name)
+		if m.cursor < len(filtered) {
+			m.contextManager.ToggleContext(filtered[m.cursor].Name)
 		}
 	case "a":
-		// Select all contexts
-		m.contextManager.SelectAllContexts()
+		if m.filterText != "" {
+			for _, ctx := range filtered {
+				if !m.isContextSelected(ctx.Name) {
+					m.contextManager.ToggleContext(ctx.Name)
+				}
+			}
+		} else {
+			m.contextManager.SelectAllContexts()
+		}
 	case "n":
-		// Select none
-		m.contextManager.SelectNoneContexts()
+		if m.filterText != "" {
+			for _, ctx := range filtered {
+				if m.isContextSelected(ctx.Name) {
+					m.contextManager.ToggleContext(ctx.Name)
+				}
+			}
+		} else {
+			m.contextManager.SelectNoneContexts()
+		}
 	case "i":
-		// Invert selection
-		m.contextManager.InvertSelection()
+		if m.filterText != "" {
+			for _, ctx := range filtered {
+				m.contextManager.ToggleContext(ctx.Name)
+			}
+		} else {
+			m.contextManager.InvertSelection()
+		}
+	case "/":
+		m.filterActive = true
+		m.filterText = ""
+		m.cursor = 0
 	case "enter":
-		// Confirm selection and close
+		m.done = true
+		m.filterText = ""
+		m.filterActive = false
+		return m, nil
+	case "esc":
+		if m.filterText != "" {
+			m.filterText = ""
+			m.cursor = 0
+			return m, nil
+		}
 		m.done = true
 		return m, nil
-	case "esc", "q":
-		// Cancel and close
+	case "q":
 		m.done = true
 		return m, nil
 	}
 
 	return m, nil
+}
+
+// isContextSelected checks if a context is in the selected list
+func (m *ContextSelectorModel) isContextSelected(name string) bool {
+	for _, s := range m.contextManager.GetSelectedContexts() {
+		if s == name {
+			return true
+		}
+	}
+	return false
 }
 
 // View renders the context selector
@@ -178,10 +277,9 @@ func (m *ContextSelectorModel) View() string {
 
 // renderContextList renders the list of contexts with selection indicators
 func (m *ContextSelectorModel) renderContextList() string {
-	contexts := m.contextManager.GetAvailableContexts()
+	contexts := m.filteredContexts()
 	selectedContexts := m.contextManager.GetSelectedContexts()
 
-	// Create a map for quick lookup of selected contexts
 	selected := make(map[string]bool)
 	for _, ctx := range selectedContexts {
 		selected[ctx] = true
@@ -189,20 +287,30 @@ func (m *ContextSelectorModel) renderContextList() string {
 
 	var items []string
 
-	// Calculate viewport height (accounting for title, controls, and padding)
-	// Title (1) + borders (2) + controls (2) + padding (2) = 7 lines overhead
-	viewportHeight := m.height - 7
+	if m.filterActive {
+		filterStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#00FFFF"))
+		items = append(items, filterStyle.Render(fmt.Sprintf("Filter: %s▏", m.filterText)))
+		items = append(items, "")
+	} else if m.filterText != "" {
+		filterStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#888888"))
+		allContexts := m.contextManager.GetAvailableContexts()
+		items = append(items, filterStyle.Render(fmt.Sprintf("Filter: %s (%d/%d contexts) [/] edit [Esc] clear", m.filterText, len(contexts), len(allContexts))))
+		items = append(items, "")
+	}
+
+	overhead := 7
+	if m.filterText != "" || m.filterActive {
+		overhead += 2
+	}
+	viewportHeight := m.height - overhead
 	if viewportHeight < 5 {
 		viewportHeight = 5
 	}
 
-	// Calculate start and end indices for visible items
 	start := 0
 	end := len(contexts)
 
-	// If we have more items than can fit in viewport, implement scrolling
 	if len(contexts) > viewportHeight {
-		// Ensure cursor is visible within the viewport
 		if m.cursor < start {
 			start = m.cursor
 		} else if m.cursor >= start+viewportHeight {
@@ -215,7 +323,6 @@ func (m *ContextSelectorModel) renderContextList() string {
 		}
 	}
 
-	// Add scroll indicator if needed
 	if start > 0 {
 		items = append(items, "↑ More contexts above...")
 	}
@@ -232,7 +339,6 @@ func (m *ContextSelectorModel) renderContextList() string {
 			checkbox = "☑"
 		}
 
-		// Add colored dot for context
 		contextDot := GetContextDot(ctx.Name)
 
 		line := fmt.Sprintf("%s %s %s %s", cursor, checkbox, contextDot, ctx.Name)
@@ -243,14 +349,12 @@ func (m *ContextSelectorModel) renderContextList() string {
 		items = append(items, line)
 	}
 
-	// Add scroll indicator if needed
 	if end < len(contexts) {
 		items = append(items, "↓ More contexts below...")
 	}
 
-	// Add controls
 	items = append(items, "")
-	items = append(items, "[A]ll  [N]one  [I]nvert  [Enter] Confirm  [Esc] Cancel")
+	items = append(items, "[/]Filter  [A]ll  [N]one  [I]nvert  [Space] Toggle  [Enter] Confirm  [Esc] Cancel")
 
 	return strings.Join(items, "\n")
 }

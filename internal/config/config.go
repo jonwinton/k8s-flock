@@ -8,12 +8,30 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// ContextConfig holds per-context configuration overrides
+type ContextConfig struct {
+	Name       string `yaml:"name"`
+	Kubeconfig string `yaml:"kubeconfig,omitempty"`
+	Color      string `yaml:"color,omitempty"`
+}
+
 // Config represents application configuration
 type Config struct {
-	DefaultNamespace           string   `yaml:"defaultNamespace"`
-	PreferredContexts          []string `yaml:"preferredContexts"`
-	RefreshInterval            int      `yaml:"refreshInterval"`
-	SortContextsAlphabetically bool     `yaml:"sortContextsAlphabetically"`
+	DefaultNamespace           string          `yaml:"defaultNamespace"`
+	PreferredContexts          []string        `yaml:"preferredContexts"`
+	RefreshInterval            int             `yaml:"refreshInterval"`
+	SortContextsAlphabetically bool            `yaml:"sortContextsAlphabetically"`
+	Contexts                   []ContextConfig `yaml:"contexts,omitempty"`
+}
+
+// GetContextConfig returns the per-context configuration for the given context name, or nil if not found
+func (c *Config) GetContextConfig(name string) *ContextConfig {
+	for i, ctx := range c.Contexts {
+		if ctx.Name == name {
+			return &c.Contexts[i]
+		}
+	}
+	return nil
 }
 
 // DefaultConfig returns the default configuration
