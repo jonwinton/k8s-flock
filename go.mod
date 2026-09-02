@@ -2,12 +2,13 @@ module github.com/jonwinton/k8s-flock
 
 go 1.24.2
 
-toolchain go1.24.5
+toolchain go1.27.1
 
 require (
 	github.com/alecthomas/kong v1.14.0
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
+	github.com/charmbracelet/x/exp/teatest v0.0.0-20260209194814-eeb2896ac759
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -18,7 +19,6 @@ require (
 	github.com/charmbracelet/x/ansi v0.11.6 // indirect
 	github.com/charmbracelet/x/cellbuf v0.0.15 // indirect
 	github.com/charmbracelet/x/exp/golden v0.0.0-20240806155701-69247e0abc2a // indirect
-	github.com/charmbracelet/x/exp/teatest v0.0.0-20260209194814-eeb2896ac759 // indirect
 	github.com/charmbracelet/x/term v0.2.2 // indirect
 	github.com/clipperhouse/displaywidth v0.10.0 // indirect
 	github.com/clipperhouse/uax29/v2 v2.6.0 // indirect
